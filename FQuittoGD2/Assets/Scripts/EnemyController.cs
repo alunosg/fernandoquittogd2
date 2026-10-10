@@ -21,6 +21,7 @@ public class EnemyController : MonoBehaviour
 
     public Transform turret;
     public Transform cannon;
+    private Transform shootTarget;
 
     public NavMeshAgent nav;
     public Transform bulletPoint;
@@ -36,15 +37,26 @@ public class EnemyController : MonoBehaviour
 
     private bool locked = false;
 
+    public float aimSpeed = 100;
+    private Quaternion targetTurretRotation;
+    private Quaternion targetCannonRotation;
+
+    public float ragdollForce = 5;
+
     // Start is called once before the first execution of Update after the MonoBehaviour is created
     void Start()
     {
         player = GameObject.FindGameObjectWithTag("Player").GetComponent<PlayerController>();
+        shootTarget = player.transform.Find("Target").transform;
+
+        maxHp = hp;
     }
 
     // Update is called once per frame
     void Update()
     {
+        LookAtTarget();
+
         if (locked) return;
 
         distance = Vector3.Distance(player.transform.position, transform.position);
@@ -164,7 +176,7 @@ public class EnemyController : MonoBehaviour
             if (hitFX) Instantiate(hitFX, transform.position, transform.rotation);
 
             hp -= damage;
-            hpBar.transform.localScale = hp / maxHp * Vector3.one;
+            hpBar.transform.localScale = new Vector3(hp / maxHp, 1, 1);
             if (hp > 0)
             {
                 //Leva hit
@@ -173,14 +185,31 @@ public class EnemyController : MonoBehaviour
             else
             {
                 //Morre
-                Destroy(gameObject, deathDuration);
+                Destroy(nav);
+
+                hpBar.transform.parent.gameObject.SetActive(false);
+
+                Rigidbody ragdoll = gameObject.AddComponent<Rigidbody>();
+
+                ragdoll.mass = 3;
+
+                ragdoll.linearVelocity = ragdollForce * (Vector3.up +
+                    (transform.position - player.transform.position).normalized);
+
+                ragdoll.angularVelocity = new Vector3
+                (
+                    Random.Range(-180, 180),
+                    Random.Range(-180, 180),
+                    Random.Range(-180, 180)
+                );
+
+                enabled = false;
             }
         }
     }
 
     void EnterAttack()
     {
-        LookAtTarget();
         locked = true;
         CancelInvoke("Unlock");
         Invoke("Unlock", attackDuration);
@@ -192,57 +221,65 @@ public class EnemyController : MonoBehaviour
 
     void LookAtTarget()
     {
+        //Calculate the Turret Rotation
         Vector3 targetPosition = player.transform.position;
         targetPosition.y = transform.position.y;
-        turret.LookAt(targetPosition);
+        targetTurretRotation = Quaternion.Inverse(turret.parent.rotation)
+            * Quaternion.LookRotation(targetPosition - turret.position);
 
-        //cannon.LookAt(player.transform);
-        //cannon.localEulerAngles = new Vector3(cannon.localEulerAngles.x, 0, 0);
+        // 1. Pegamos a posição do pivot do canhão e do jogador
+        Vector3 fromPos = cannon.position;
+        Vector3 toPos = shootTarget.position;
 
-        //bulletPoint.LookAt(player.transform);
+        // 2. Calculamos a distância horizontal (XZ) e a altura vertical (Y) pura entre os pivots
+        Vector3 diffXZ = new Vector3(toPos.x - fromPos.x, 0, toPos.z - fromPos.z);
+        float xPivot = diffXZ.magnitude;
+        float yPivot = toPos.y - fromPos.y;
 
+        // 3. Descobrimos o comprimento físico do cano (distância Z local do pivot até a ponta)
+        float barrelLength = cannon.InverseTransformPoint(bulletPoint.position).z;
 
+        // 4. CORREÇÃO MATEMÁTICA DEFINITIVA:
+        // A gravidade só age na bala DEPOIS que ela sai da ponta do cano.
+        // Portanto, a distância real que a parábola precisa percorrer é a distância total menos o cano.
+        float x = xPivot - barrelLength;
+        float y = yPivot;
 
-
-        // 1. Encontra a distância e altura em relação ao pivot de rotação do canhão
-        Vector3 targetPos = player.transform.position;
-        Vector3 lowTarget = new Vector3(targetPos.x, cannon.position.y, targetPos.z);
-
-        float xPivot = Vector3.Distance(cannon.position, lowTarget);
-        float yPivot = targetPos.y - cannon.position.y;
-
-        // 2. Calcula o offset local do bulletPoint em relação ao canhão
-        // Isso nos dá exatamente o comprimento do cano (zOffset) e a altura dele (yOffset)
-        Vector3 localMuzzleOffset = cannon.InverseTransformPoint(bulletPoint.position);
-        float zOffset = localMuzzleOffset.z; // Distância para a frente do pivot
-        float yOffset = localMuzzleOffset.y; // Distância para cima/baixo do pivot
-
-        // 3. Ajustamos o alvo real subtraindo o avanço do cano do cálculo de distância horizontal
-        float x = xPivot - zOffset;
-        float y = yPivot - yOffset;
-
-        float v = bulletSpeed;
-        float g = Physics.gravity.magnitude;
-
-        // 4. Fórmula da Trajetória Balística pura
-        float discriminant = (v * v * v * v) - g * (g * (x * x) + 2 * y * (v * v));
-
-        if (discriminant >= 0)
+        // Proteção para o caso do jogador estar literalmente colado ou "dentro" do canhão
+        if (x < 2f)
         {
-            float sqrtRoot = Mathf.Sqrt(discriminant);
-
-            // Ângulo da trajetória em radianos
-            float angleRad = Mathf.Atan2((v * v) - sqrtRoot, g * x);
-            float angleDeg = angleRad * Mathf.Rad2Deg;
-
-            // 5. Aplica estritamente no eixo X local do canhão (invertido para a Unity)
-            cannon.localRotation = Quaternion.Euler(-angleDeg, 0, 0);
+            targetCannonRotation = Quaternion.Euler(-10f, 0, 0);
         }
         else
         {
-            // Fora de alcance: busca o maior ângulo
-            cannon.localRotation = Quaternion.Euler(-45f, 0, 0);
-            Debug.Log("out of range");
+            float v = bulletSpeed;
+            float g = Physics.gravity.magnitude;
+
+            // 5. Fórmula da Trajetória Balística Pura e Estável
+            float discriminant = (v * v * v * v) - g * (g * (x * x) + 2 * y * (v * v));
+
+            if (discriminant >= 0)
+            {
+                float sqrtRoot = Mathf.Sqrt(discriminant);
+
+                // Ângulo balístico exato em radianos
+                float angleRad = Mathf.Atan2((v * v) - sqrtRoot, g * x);
+                float angleDeg = angleRad * Mathf.Rad2Deg;
+
+                // Aplica a rotação de forma limpa no eixo X local do canhão
+                targetCannonRotation = Quaternion.Euler(-angleDeg, 0, 0);
+            }
+            else
+            {
+                // Fora de alcance: Inclina a 45 graus para máxima distância
+                targetCannonRotation = Quaternion.Euler(-45f, 0, 0);
+            }
         }
+
+        turret.localRotation = Quaternion.RotateTowards(
+            turret.localRotation, targetTurretRotation, aimSpeed * Time.deltaTime);
+
+        cannon.localRotation = Quaternion.RotateTowards(
+            cannon.localRotation, targetCannonRotation, aimSpeed * Time.deltaTime);
     }
 }
