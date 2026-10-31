@@ -285,7 +285,7 @@ MonoBehaviour:
   bulletPrefab: {fileID: 8872755128353679530, guid: 4e2244d1a952c0c4d8f524f38bd73a85, type: 3}
   bulletSpeed: 30
   hpBar: {fileID: 5050162032000814772}
-  hp: 5
+  hp: 2
   aimSpeed: 100
   ragdollForce: 5
   spawner: {fileID: 0}
